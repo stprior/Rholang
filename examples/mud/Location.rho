@@ -1,0 +1,12 @@
+contract Location(commandChannel, description) = 
+{
+  for( action <- commandChannel )
+  {
+    match action with
+      look{ respondTo } => {
+        respondTo!( description ) | Location(commandChannel, description)
+      }
+  }
+}
+
+
