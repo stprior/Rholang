@@ -12,13 +12,27 @@
 (defOprn miss?)
 (defOprn production?)
 
+;;;;RblTable defined in rbl/rosette/table-oprns.rbl
 (defActor NameSpace (slots& chart (new RblTable)))
 
 (defRMethod NameSpace (consume ctxt & location)
  ;;; by makng this a reflective method - RMethod - we gain access to the awaiting continuation
  ;;; bound to the formal parameter ctxt
+ ;;;; RMethod and defRMethod appear to be undocumented in Rosette 1.1 pdf
+ ;;;; source defines it 
+;;;; (defRMethod <proto> (<oprn> & <args>) & <body>)
+;;;; ==>
+;;;; `(add ,<oprn> (run (compile ',(rmethod ,<args> ,& <body>)
+;;;;                             (ct-proto ,<proto>)))
+;;;;               (sbo ,<proto>))
+;;;; letrec simultaneously defines a list of identities which are bound from expressions
+;;;; [channel ptrn] in the body of the namespace will be substituted by the result of evaluating location
   (letrec [[[channel ptrn] location]
   ;;; the channel and the pattern of incoming messages to look for are destructured and bound
+
+
+;;;; sets subspace from tbl-get of chart channel 
+;;;; chart is a slot (an RblTable), channel is from the earlier identity (how do they cross reference if they are simultaneous?)
         [subspace (tbl-get chart channel)]
                 ;;; the incoming messages associated with the channel are collected in a subtable
                 ;;; in this sense we can see that the semantic framework supports a compositional
@@ -27,7 +41,13 @@
                 ;;; the channel name becomes the topic, and the pattern structure becomes
                 ;;; the subtopic tree
                 ;;; this also unifies with the URL view of resource access
+
+
+;;;; sets candidates from names of subspace
+;;;; names is an operation on RblTable
        [candidates (names subspace)]
+;;;; sets [extractions remainder] from 
+;;;; folding candidates with the proc given
        [[extractions remainder]
           (fold candidates
             (proc [e acc k]
@@ -36,6 +56,8 @@
             (if (miss? binding)
                 (k [hits [e & misses]])
                 (k [[[e binding] & hits] misses])))))]
+
+
                   ;;; note that this is generic in the match? and miss? predicates
                   ;;; matching could be unification (as it is in SpecialK) or it could be
                   ;;; a number of other special purpose protocols
@@ -45,8 +67,13 @@
        [[productions consummation]
             (fold extractions
               (proc [[e binding] acc k]
+
+
+[hit (tbl-get subspace e)]]
                 (let [[[productions consumers] acc]
-               [hit (tbl-get subspace e)]]
+               [[extractions remainder] (
+                                         
+                                        ;;;; folding candidates with the proc givensubspace e)]]
                   (if (production? hit)
                (k [[[[e binding] hit] & productions] consumers])
                (k [productions [[e hit] & consumers]])))))]]
