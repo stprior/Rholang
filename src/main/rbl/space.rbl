@@ -50,13 +50,16 @@
 ;;;; folding candidates with the proc given
        [[extractions remainder]
           (fold candidates
+;;;; ? e is current item, acc is accumulator, k is the fold-function             
             (proc [e acc k]
                 (let [[[hits misses] acc]
                 [binding (match? ptrn e)]]
             (if (miss? binding)
+;;;; if e doesn't match pattern recurse with e=hits, acc = e & misses 
                 (k [hits [e & misses]])
+;;;; else recurse with e = [ e binding] & previous hits, acc = misses
                 (k [[[e binding] & hits] misses])))))]
-
+;;;; should return list of e with binding for each hit ? 
 
                   ;;; note that this is generic in the match? and miss? predicates
                   ;;; matching could be unification (as it is in SpecialK) or it could be
