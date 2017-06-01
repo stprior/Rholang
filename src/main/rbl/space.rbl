@@ -84,21 +84,18 @@
        ;;; this is a much more fine-grained view of excluded middle
        [[productions consummation]
             (fold extractions
-              (proc [
-                    [e binding] acc k]
-                    [hit (tbl-get subspace e)]
-                    ]
+              (proc [[e binding] acc k]
                 (let [
                      [[productions consumers] acc]
+                     [hit (tbl-get subspace e)]]
+
                      [[extractions remainder] 
                        ( ;;;; folding candidates with the proc givensubspace e)]]
-                         (if (production? hit)
-                           (k [[[[e binding] hit] & productions] consumers])
-                           (k [productions [[e hit] & consumers]])
-                         )
-                       )
-;;;;!wrong bracket
-))]]
+                     (if (production? hit)
+                         (k [[[[e binding] hit] & productions] consumers])
+                         (k [productions [[e hit] & consumers]])
+                     )
+       )))]]
 
    ;;;;Body of first letrec
    (seq
