@@ -1,0 +1,3 @@
+(defOprn Location)
+(defActor LocationContract (method (Location commandChannel description) (map commandChannel (proc [action] (if (match? action (look respondTo)) ( (proc [(look respondTo)] (block (produce TupleSpaceVar031a60484fe8 respondTo (Q description)) (Location TupleSpaceVarbbf0632fdd64 commandChannel description))) action) #niv)))))
+

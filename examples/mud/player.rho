@@ -1,0 +1,12 @@
+contract Player (actionChannel, currentLocation) =
+{
+  for ( action <- actionChannel ) {
+    match action with
+      look { respondTo } => {
+       currentLocation!(action)
+      }
+      go { location } => {
+        Player(actionChannel, location)
+      }
+   }
+}

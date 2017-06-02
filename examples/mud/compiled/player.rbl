@@ -1,0 +1,2 @@
+(defOprn Player)
+(defActor PlayerContract (method (Player actionChannel currentLocation) (map actionChannel (proc [action] (if (match? action (look respondTo)) ( (proc [(look respondTo)] (produce TupleSpaceVar7009ebd165d1 currentLocation (Q action))) action) (if (match? action (go location)) ( (proc [(go location)] (Player TupleSpaceVar06ef4da8cc0d actionChannel location)) action) #niv))))))
