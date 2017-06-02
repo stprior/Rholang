@@ -14,13 +14,18 @@ import coop.rchain.lib.zipper._
 import coop.rchain.syntax.rholang._
 import coop.rchain.syntax.rholang.Absyn._
 
+// TODO: Check if we can move these to a specific file like "RoselangNavigation.scala"
+// and see if we need change some of the new TermCtxtBranch[L,V,T] calls to more specific classes
 trait StrTermNavigation extends TermNavigation[String,Either[String,String],String]
 trait StrTermMutation extends TermMutation [String,Either[String,String],String]
 trait StrTermZipperComposition extends TermZipperComposition[String,Either[String,String],String]
 trait StrTermSubstitution extends TermSubstitution[String,Either[String,String],String]
 
+// V for language variable
+// K for "context" variable
+// G for "ground" value
 object StrTermCtorAbbrevs {
-  type StrTermCtxt = TermCtxt[String,Either[String,String],String] with Factual
+  type StrTermCtxt = TermCtxt[String,Either[String,String],String] with Factual with RosetteSerialization[String,Either[String,String],String]
   def V( v : String ) : StrTermCtxt = StrTermPtdCtxtLf( Right( Left( v ) ) )
   def K( v : String ) : StrTermCtxt = StrTermPtdCtxtLf( Right( Right( v ) ) )
   def G( v : String ) : StrTermCtxt = StrTermPtdCtxtLf( Left( v ) )
@@ -74,6 +79,10 @@ object CompilerExceptions {
     b : CBranch
   ) extends Exception( s"$b found in unexpected context" )
       with CompilerException with SyntaxException
+  case class UnexpectedPMBranchType(
+    b : PMBranch
+  ) extends Exception( s"$b found in unexpected context" )
+    with CompilerException with SyntaxException
   case class FailedQuotation(
     b : AnyRef
   ) extends Exception( s"$b found in unexpected context" )
@@ -103,6 +112,8 @@ object RosetteOps {
   val _rx = "RX"
   val _run = "run"
   val _compile = "compile"
+  var _if = "if"
+  var _match = "match?" // TODO: Adjust based on Rosette implementation. This operation checks for equality in the "match" implementation.
 }
 
 trait StrFoldCtxtVisitor
@@ -417,6 +428,7 @@ extends StrFoldCtxtVisitor {
     p match {
       case pNil : PNil => visit( pNil, arg )
       case pVal : PValue => visit( pVal, arg )
+      case pVar : PVar => visit( pVar, arg )
       case pDrop : PDrop => visit( pDrop, arg )
       case pInject : PInject => visit( pInject, arg )
       case pLift : PLift => visit( pLift, arg )
@@ -434,8 +446,12 @@ extends StrFoldCtxtVisitor {
   override def visit(  p : PNil, arg : A ) : R = {    
     combine( arg, Some( L( G( "#niv" ), T() ) ) )
   }
-  override def visit(  p : PValue, arg : A ) : R
-  override def visit(  p : PVar, arg : A ) : R
+  override def visit(  p : PValue, arg : A ) : R = {
+    combine( arg, visitDispatch( p.value_, Here() ) )
+  }
+  override def visit(  p : PVar, arg : A ) : R = {
+    combine( arg, L(V(p.var_), Top()) )
+  }
   override def visit(  p : PDrop, arg : A ) : R = {
     /*
      *  Note that there are at least two different approaches to the
@@ -463,6 +479,7 @@ extends StrFoldCtxtVisitor {
     )    
   }
   override def visit(  p : PInject, arg : A ) : R
+
   override def visit(  p : PLift, arg : A ) : R = {
     import scala.collection.JavaConverters._
     /*
@@ -470,6 +487,7 @@ extends StrFoldCtxtVisitor {
      *  =
      *  ( produce t [| x ]( t ) `(,[| P1 |]( t )) ... `(,[| PN |]( t )) )
      */
+
     val actls =
       ( List[StrTermCtxt]() /: p.listproc_.asScala.toList )(
         {
@@ -490,7 +508,9 @@ extends StrFoldCtxtVisitor {
 
     combine(
       arg,
-      Some( L( B( _produce )( (List( TS ) ++ actls):_* ), Top() ) )
+      for( Location( cTerm : StrTermCtxt, _ ) <- visitDispatch( p.chan_, Here() ) ) yield {
+        L( B( _produce )( (List( TS ) ++ List(cTerm) ++ actls):_* ), Top() )
+      }
     )
   }
   override def visit(  p : PInput, arg : A ) : R = {
@@ -569,19 +589,16 @@ extends StrFoldCtxtVisitor {
               ( acc, e ) => {
                 e match {
                   case inBind : InputBind => {
-                    combine(
-                      acc,
-                      for(
-                        // [[ chan ]] is chanTerm
-                        Location( chanTerm : StrTermCtxt, _ ) <- visitDispatch( inBind.chan_, Here() );
-                        // [[ ptrn ]] is ptrnTerm
-                        Location( ptrnTerm : StrTermCtxt, _ ) <- visitDispatch( inBind.cpattern_, Here() );
-                        Location( rbindingsTerm : StrTermCtxt, _ ) <- acc
-                      ) yield {
-                        // ( flatMap [[ chan ]] proc [[ ptrn ]] [[ for( bindings )P ]] )
-                        L( B( _join )( chanTerm, B( _abs )( ptrnTerm, rbindingsTerm ) ), T() )
-                      }
-                    )
+                    for (
+                      // [[ chan ]] is chanTerm
+                      Location( chanTerm : StrTermCtxt, _ ) <- visitDispatch( inBind.chan_, Here() );
+                      // [[ ptrn ]] is ptrnTerm
+                      Location( ptrnTerm : StrTermCtxt, _ ) <- visitDispatch( inBind.cpattern_, Here() );
+                      Location( rbindingsTerm : StrTermCtxt, _ ) <- acc
+                    ) yield {
+                      // ( flatMap [[ chan ]] proc [[ ptrn ]] [[ for( bindings )P ]] )
+                      L( B( _join )( chanTerm, B( _abs )( ptrnTerm, rbindingsTerm ) ), T() )
+                    }
                   }
                   case cndInBind : CondInputBind => {
                     for(
@@ -651,12 +668,12 @@ extends StrFoldCtxtVisitor {
             ( new CPtVar( new VarPtVar( lmsgVStr ) ), new CVar( Fresh() ) )
           val lbind = new InputBind( lmsg, lchan )
 
-          // case 1 => P_i
-          val bvericase =
-            new PatternMatch( new PPtVal( new VPtInt( 1 ) ), branch.proc_ )
-
           val balertActls = new ListProc()
           balertActls.add( babsurdity )
+
+          // case 1 => P_i | lchan!(0)
+          val bvericase =
+            new PatternMatch( new PPtVal( new VPtInt( 1 ) ), new PPar(branch.proc_, new PLift( lchan, balertActls )))
 
           // case 0 => lchan!( 0 )
           val babsucase =
@@ -684,7 +701,7 @@ extends StrFoldCtxtVisitor {
               new PInput( branch.listbind_, new PLift( bchan, bsatActls ) ),
               // for( bmsg <- bchan; lmsg <- lchan ){
               //   match lmsg with
-              //    case 1 => P_i
+              //    case 1 => P_i | lchan!(0)
               //    case 0 => lchan!( 0 )
               // }          
               new PInput( blocks, bmatch )
@@ -715,14 +732,14 @@ extends StrFoldCtxtVisitor {
        *   | for( bindings1 ){ b1!( true ) } 
        *   | for( b <- b1; l <- lock ){ 
        *      match l with 
-       *       case true => P1; 
+       *       case true => P1 | lock!(false)
        *       case false => lock!( false )
        *     }
        *    ...
        *   | for( bindingsN ){ bN!( true ) } 
        *   | for( b <- b1; l <- lock ){ 
        *      match l with 
-       *       case true => P1; 
+       *       case true => P1 | lock!(false)
        *       case false => lock!( false )
        *     }
        */
@@ -734,11 +751,91 @@ extends StrFoldCtxtVisitor {
 
         visit( new PNew( bnewVars, bigbpar ), arg )
       }
-    }    
+    }
   }
 
-  override def visit(  p : PMatch, arg : A ) : R
-  //override def visit(  p : PNew, arg : A ) : R
+  override def visit(  p : PMatch, arg : A ) : R = {
+    import scala.collection.JavaConverters._
+    /*
+     *  match <var> with
+     *    case <bindings1> => P1;
+     *    case <bindings2> => P2;
+     *    ...
+     *    case <bindingsN> => PN;
+     *  =
+     *  (if (match? <var> [[ bindings1 ]]) [[ P1 ]]
+     *     (if (match? <var> [[ bindings2 ]]) ((proc [ [[ bindings2 ]] ] [[ P2 ]]) <var>) // Note a proc is generated only if there is a variable inside the <var> term
+     *         ...
+     *         (if (match? <var> [[bindingsN]]) [[ PN ]] #niv) // TODO: Handle nonexhaustive match by replacing #niv
+     *     )
+     *  )
+     */
+
+    def nonExhaustiveMatch: R = L(G("#niv"), Top())
+
+    def patternMatchVisitAux: R = {
+      val result = for (Location(pTerm: StrTermCtxt, _) <- visitDispatch(p.proc_, Here())) yield {
+        val reverseListPMBranch = p.listpmbranch_.asScala.toList.reverse
+        (nonExhaustiveMatch /: reverseListPMBranch) {
+          (acc, e) => {
+            e match {
+              case pm: PatternMatch => {
+                for (
+                  Location(pattern: StrTermCtxt, _) <- visitDispatch(pm.ppattern_, Here());
+                  Location(continuation: StrTermCtxt, _) <- visitDispatch(pm.proc_, Here());
+                  Location(remainder: StrTermCtxt, _) <- acc
+                ) yield {
+
+                  def createProcForPatternBindings = {
+                    val procTerm = B(_abs)(pattern, continuation)
+                    B("")(procTerm, pTerm) // TODO: Potentially allow StrTermPtdCtxtBr without Namespace ?
+                  }
+
+                  val matchTerm = B(_match)(pTerm, pattern)
+                  val matchTrueTerm = if (hasVariable(pm.ppattern_)) {
+                    createProcForPatternBindings
+                  } else {
+                    continuation
+                  }
+                  val ifTerm = B(_if)(matchTerm, matchTrueTerm, remainder)
+                  L(ifTerm, Top())
+                }
+              }
+              case _ => throw new UnexpectedPMBranchType(e)
+            }
+          }
+        }
+      }
+      result match {
+        case Some(r) => r
+        case _ => throw new Exception()
+      }
+    }
+
+    combine(
+      arg,
+      patternMatchVisitAux
+    )
+  }
+
+  def hasVariable(p: PPattern): Boolean = {
+    // TODO: Fill in rest of cases
+    p match {
+      case pPtVar : PPtVar => true
+      case pPtNil : PPtNil => false
+      case pPtVal : PPtVal => hasVariable( pPtVal.valpattern_ )
+    }
+  }
+
+  def hasVariable(p: ValPattern) : Boolean = {
+    import scala.collection.JavaConverters._
+    p match {
+      case vPtStruct : VPtStruct => vPtStruct.listppattern_.asScala.toList.exists(hasVariable)
+      case vPtTuple: VPtTuple => vPtTuple.listppattern_.asScala.toList.exists(hasVariable)
+      case _ => false
+    }
+  }
+
   override def visit(  p : PConstr, arg : A ) : R = {
     import scala.collection.JavaConverters._
     /*
@@ -822,16 +919,30 @@ extends StrFoldCtxtVisitor {
       }
     }
   }
-  /* PMBranch */
-  override def visit(  p : PatternMatch, arg : A
- ) : R
   /* CBranch */
   override def visit(  p : Choice, arg : A ) : R
 
   /* Value */
-  override def visit(  p : VQuant, arg : A ) : R
-  override def visit(  p : VEnt, arg : A ) : R
+  def visitDispatch( p : Value, arg : A ) : R = {
+    p match {
+      case ent : VEnt => visit( ent, arg )
+      case quant : VQuant => visit( quant, arg )
+    }
+  }
+  override def visit(  p : VQuant, arg : A ) : R = {
+    combine( arg, visitDispatch( p.quantity_, Here() ) )
+  }
+  override def visit(  p : VEnt, arg : A ) : R = {
+    combine( arg, visitDispatch( p.entity_, Here() ) )
+  }
   /* Quantity */
+  def visitDispatch( p : Quantity, arg : A ) : R = {
+    p match {
+      case bool : QBool => visit( bool, arg )
+      case int : QInt => visit( int, arg )
+      case double : QDouble => visit( double, arg )
+    }
+  }
   override def visit(  p : QInt, arg : A ) : R = {
     combine(
       arg,
@@ -842,13 +953,6 @@ extends StrFoldCtxtVisitor {
     combine(
       arg,
       L( G( s"""${p.double_}"""), Top() )
-    )
-  }
-  /* Entity */
-  override def visit(  p : EChar, arg : A ) : R = {
-    combine(
-      arg,
-      L( G( s"""'${p.char_}'"""), Top() )
     )
   }
   override def visit( p : QTrue, arg : A) : R = {
@@ -863,8 +967,25 @@ extends StrFoldCtxtVisitor {
       L( G( s"""#f"""), Top() )
     )
   }
+
+  /* Entity */
+  def visitDispatch( p : Entity, arg : A ) : R = {
+    p match {
+      case char : EChar => visit( char, arg )
+      case struct : EStruct => visit( struct, arg )
+      case collect : ECollect => visit( collect, arg )
+      case tuple : ETuple => visit( tuple, arg )
+    }
+  }
+  override def visit(  p : EChar, arg : A ) : R = {
+    combine(
+      arg,
+      L( G( s"""'${p.char_}'"""), Top() )
+    )
+  }
   override def visit(  p : EStruct, arg : A ) : R
   override def visit(  p : ECollect, arg : A ) : R
+
   /* Struct */
   override def visit(  p : StructConstr, arg : A ) : R
   /* Collect */
@@ -883,12 +1004,33 @@ extends StrFoldCtxtVisitor {
     }
   }
   /* VarPattern */
-  override def visit(  p : VarPtVar, arg : A ) : R
+  def visitDispatch( p : VarPattern, arg : A ) : R = {
+    p match {
+      case regular: VarPtVar => visit(regular, Here())
+      case wild: VarPtWild => visit(wild, Here())
+    }
+  }
+  override def visit(p: VarPtVar, arg: A): R = {
+    combine( arg, L(V(p.var_), Top()) )
+  }
   override def visit(  p : VarPtWild, arg : A ) : R
+
   /* PPattern */
-  override def visit(  p : PPtVar, arg : A ) : R
+  def visitDispatch( p : PPattern, arg : A ) : R = {
+    // TODO: Fill in rest of PPattern subclasses
+    p match {
+      case pPtVar : PPtVar => visit( pPtVar, arg )
+      case pPtNil : PPtNil => visit( pPtNil, arg )
+      case pPtVal : PPtVal => visit( pPtVal, arg )
+    }
+  }
+  override def visit(  p : PPtVar, arg : A ) : R = {
+    combine(arg, visitDispatch(p.varpattern_, Here()))
+  }
   override def visit(  p : PPtNil, arg : A ) : R
-  override def visit(  p : PPtVal, arg : A ) : R
+  override def visit(  p : PPtVal, arg : A ) : R = {
+    combine(arg, visitDispatch(p.valpattern_, Here()))
+  }
 
   override def visit(  p : PPtDrop, arg : A ) : R
   override def visit(  p : PPtInject, arg : A ) : R
@@ -902,12 +1044,50 @@ extends StrFoldCtxtVisitor {
   override def visit(  p : PPtPar, arg : A ) : R
 
   /* CPattern */
-  override def visit(  p : CPtVar, arg : A ) : R
+  override def visit(p: CPtVar, arg: A): R = {
+    combine(arg, visitDispatch(p.varpattern_, Here()))
+  }
   override def visit(  p : CPtQuote, arg : A ) : R
   /* PatternBind */
   override def visit(  p : PtBind, arg : A ) : R
   /* PatternPatternMatch */
   override def visit(  p : PtBranch, arg : A ) : R
   /* ValPattern */
-  override def visit(  p : VPtStruct, arg : A ) : R
+  def visitDispatch( p : ValPattern, arg : A ) : R = {
+    // TODO: Fill in rest of ValPattern subclasses
+    p match {
+      case vPtStruct : VPtStruct => visit( vPtStruct, arg )
+      case vPtInt : VPtInt => visit( vPtInt, arg )
+    }
+  }
+  override def visit(  p : VPtStruct, arg : A ) : R = {
+    import scala.collection.JavaConverters._
+    
+    val structContents =
+      ( List[StrTermCtxt]() /: p.listppattern_.asScala.toList )(
+        {
+          ( acc, e ) => {
+            visitDispatch( e, Here() ) match {
+              case Some( Location( frml : StrTermCtxt, _ ) ) => {
+                acc ++ List( frml )
+              }
+              case None => {
+                acc
+              }
+            }
+          }
+        }
+      )
+
+    combine(
+      arg,
+      L( B(p.var_)( structContents:_* ), Top() )
+    )
+  }
+  override def visit(  p : VPtInt, arg: A ): R = {
+    combine(
+      arg,
+      L( G( s"""${p.integer_}"""), Top() )
+    )
+  }
 }
