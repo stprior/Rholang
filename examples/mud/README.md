@@ -1,4 +1,4 @@
-#Rho-Mud
+# Rho-Mud
 This is to be an implementation of a simple adventure using rholang. 
 
 ## Phase 1 - POC
