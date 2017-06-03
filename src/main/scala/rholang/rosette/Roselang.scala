@@ -759,16 +759,18 @@ extends StrFoldCtxtVisitor {
     /*
      *  match <var> with
      *    case <bindings1> => P1;
+     *    case <bindings2> => P2;
      *    ...
      *    case <bindingsN> => PN;
      *  =
      *  (if (match? <var> [[ bindings1 ]]) [[ P1 ]]
-     *     (if (match? <var> [[ bindings2 ]]) [[ P2 ]]
+     *     (if (match? <var> [[ bindings2 ]]) ((proc [ [[ bindings2 ]] ] [[ P2 ]]) <var>) // Note a proc is generated only if there is a variable inside the <var> term
      *         ...
      *         (if (match? <var> [[bindingsN]]) [[ PN ]] #niv) // TODO: Handle nonexhaustive match by replacing #niv
      *     )
      *  )
      */
+
     def nonExhaustiveMatch: R = L(G("#niv"), Top())
 
     def patternMatchVisitAux: R = {
@@ -783,8 +785,19 @@ extends StrFoldCtxtVisitor {
                   Location(continuation: StrTermCtxt, _) <- visitDispatch(pm.proc_, Here());
                   Location(remainder: StrTermCtxt, _) <- acc
                 ) yield {
+
+                  def createProcForPatternBindings = {
+                    val procTerm = B(_abs)(pattern, continuation)
+                    B("")(procTerm, pTerm) // TODO: Potentially allow StrTermPtdCtxtBr without Namespace ?
+                  }
+
                   val matchTerm = B(_match)(pTerm, pattern)
-                  val ifTerm = B(_if)(matchTerm, continuation, remainder)
+                  val matchTrueTerm = if (hasVariable(pm.ppattern_)) {
+                    createProcForPatternBindings
+                  } else {
+                    continuation
+                  }
+                  val ifTerm = B(_if)(matchTerm, matchTrueTerm, remainder)
                   L(ifTerm, Top())
                 }
               }
@@ -803,6 +816,24 @@ extends StrFoldCtxtVisitor {
       arg,
       patternMatchVisitAux
     )
+  }
+
+  def hasVariable(p: PPattern): Boolean = {
+    // TODO: Fill in rest of cases
+    p match {
+      case pPtVar : PPtVar => true
+      case pPtNil : PPtNil => false
+      case pPtVal : PPtVal => hasVariable( pPtVal.valpattern_ )
+    }
+  }
+
+  def hasVariable(p: ValPattern) : Boolean = {
+    import scala.collection.JavaConverters._
+    p match {
+      case vPtStruct : VPtStruct => vPtStruct.listppattern_.asScala.toList.exists(hasVariable)
+      case vPtTuple: VPtTuple => vPtTuple.listppattern_.asScala.toList.exists(hasVariable)
+      case _ => false
+    }
   }
 
   override def visit(  p : PConstr, arg : A ) : R = {
@@ -973,6 +1004,12 @@ extends StrFoldCtxtVisitor {
     }
   }
   /* VarPattern */
+  def visitDispatch( p : VarPattern, arg : A ) : R = {
+    p match {
+      case regular: VarPtVar => visit(regular, Here())
+      case wild: VarPtWild => visit(wild, Here())
+    }
+  }
   override def visit(p: VarPtVar, arg: A): R = {
     combine( arg, L(V(p.var_), Top()) )
   }
@@ -987,7 +1024,9 @@ extends StrFoldCtxtVisitor {
       case pPtVal : PPtVal => visit( pPtVal, arg )
     }
   }
-  override def visit(  p : PPtVar, arg : A ) : R
+  override def visit(  p : PPtVar, arg : A ) : R = {
+    combine(arg, visitDispatch(p.varpattern_, Here()))
+  }
   override def visit(  p : PPtNil, arg : A ) : R
   override def visit(  p : PPtVal, arg : A ) : R = {
     combine(arg, visitDispatch(p.valpattern_, Here()))
@@ -1006,15 +1045,7 @@ extends StrFoldCtxtVisitor {
 
   /* CPattern */
   override def visit(p: CPtVar, arg: A): R = {
-    combine(arg,
-      p.varpattern_ match {
-        case regular: VarPtVar => {
-          visit(regular, Here())
-        }
-        case wild: VarPtWild => {
-          visit(wild, Here())
-        }
-      })
+    combine(arg, visitDispatch(p.varpattern_, Here()))
   }
   override def visit(  p : CPtQuote, arg : A ) : R
   /* PatternBind */
@@ -1029,7 +1060,30 @@ extends StrFoldCtxtVisitor {
       case vPtInt : VPtInt => visit( vPtInt, arg )
     }
   }
-  override def visit(  p : VPtStruct, arg : A ) : R
+  override def visit(  p : VPtStruct, arg : A ) : R = {
+    import scala.collection.JavaConverters._
+    
+    val structContents =
+      ( List[StrTermCtxt]() /: p.listppattern_.asScala.toList )(
+        {
+          ( acc, e ) => {
+            visitDispatch( e, Here() ) match {
+              case Some( Location( frml : StrTermCtxt, _ ) ) => {
+                acc ++ List( frml )
+              }
+              case None => {
+                acc
+              }
+            }
+          }
+        }
+      )
+
+    combine(
+      arg,
+      L( B(p.var_)( structContents:_* ), Top() )
+    )
+  }
   override def visit(  p : VPtInt, arg: A ): R = {
     combine(
       arg,
