@@ -81,37 +81,28 @@ case class StrTermPtdCtxtBr(override val nameSpace: String,
         case _ :: _ => {
           var acc = ""
 
-          def serializeLetExpr(lbl: TermCtxt[String, Either[String, String], String] with Factual with RosetteSerialization[String, Either[String, String], String], i: Int) = {
-            if (i == labels.length - 1) {
-              acc = "[" + acc + " ] " + lbl.rosetteSerialize
-            } else {
-              acc = acc + " " + lbl.rosetteSerialize.map({ case '(' => '[' case ')' => ']' case c => c })
-            }
-          }
 
           def serializeExpr(lbl: TermCtxt[String, Either[String, String], String] with Factual with RosetteSerialization[String, Either[String, String], String], i: Int) = {
             if (i == 0) {
-              if (nameSpace.toString.contentEquals("proc")) {
-                acc = "[" + lbl.rosetteSerialize + "]"
-              } else {
-                acc = lbl.rosetteSerialize
-              }
+              acc = lbl.rosetteSerialize
             } else {
               acc = acc + " " + lbl.rosetteSerialize
             }
           }
 
           for ((lbl, i) <- labels.zipWithIndex) {
-            if (nameSpace.toString.contentEquals("let")) {
-              serializeLetExpr(lbl, i)
-            } else {
-              serializeExpr(lbl, i)
-            }
+            serializeExpr(lbl, i)
           }
           acc
         }
         case Nil => ""
       }
-    "(" + nameSpace + " " + lblStr + ")"
+    if (nameSpace.toString.contentEquals("list")) {
+      "[" + lblStr + "]"
+    } else if (nameSpace.toString.contentEquals("Q")) {
+      "'" + lblStr
+    } else {
+      "(" + nameSpace + " " + lblStr + ")"
+    }
   }
 }
