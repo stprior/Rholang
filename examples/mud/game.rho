@@ -1,0 +1,19 @@
+contract Game(publicListenChannel) = {
+  //define known locations
+  new loc1,loc2,loc3 in
+  //rholang compiler doesn't support strings yet AFAIK, so using ints as placeholders. These would be location description string literals
+  Location(loc1,42)
+  |Location(loc2,43)
+  |Location(loc3,44)
+  //for each new request to start a game, wire up the command channel and response channel
+  |for (request <- publicListenChannel) {
+    //make a new channel for the player
+    new playerCommandChannel in
+    //wire the logic in the Player contract to the new channel and first location
+    Player(playerCommandChannel,loc1)
+    //send the new channel to player back to the caller
+    |match request with start{ rtn } => {
+      rtn!(playerCommandChannel)
+    }
+  }
+}

@@ -1,0 +1,3 @@
+(defOprn Game)
+(defActor GameContract (method (Game publicListenChannel) (block (block (block (let (loc1 rholang68e819de6a23) (loc2 rholang188a8558ed57) (loc3 rholangbb8a6eebdb24) (Location t loc1 42)) (Location t loc2 43)) (Location t loc3 44)) (let [[[[[rholang96663ef67256 _binding] rholang5990460184b5]] (consume t publicListenChannel 'request)]] ( (proc [rholang96663ef67256] (block (let (playerCommandChannel rholang2ebe6298cde8) (Player t playerCommandChannel loc1)) (if (match? request (start rtn)) ( (proc (start rtn) (produce t rtn 'player)) request) #niv))) rholang5990460184b5)))))
+
