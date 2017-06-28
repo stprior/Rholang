@@ -9,7 +9,10 @@ contract Game(publicListenChannel) = {
   |for (request <- publicListenChannel) {
     //make a new channel for the player
     new playerCommandChannel in
-    //wire the logic in the Player contract to the new channel and first location
+
+    //wire the logic in the Player contract to the new channel and
+    //first location. Key observation is that we don't construct an 
+    //instance of Player, rather we pass on the input channel
     Player(playerCommandChannel,loc1)
     //send the new channel to player back to the caller
     |match request with start{ rtn } => {
