@@ -425,33 +425,11 @@ extends StrFoldCtxtVisitor {
     )
   }
 
-  /* Proc with StrTermCtxt */
-  // TODO: Unify with visitDispatch( p : Proc) and reduce code duplication
-  def visitDispatch( p : Proc, product: StrTermCtxt, arg : A ) : R = {
-    p match {
-      case pNil : PNil => visit( pNil, arg )
-      case pVal : PValue => visit( pVal, arg )
-      case pVar : PVar => visit( pVar, arg )
-      case pDrop : PDrop => visit( pDrop, arg )
-      case pInject : PInject => visit( pInject, arg )
-      case pLift : PLift => visit( pLift, product, arg )
-      case pFoldL : PFoldL => visit( pFoldL, arg )
-      case pFoldR : PFoldR => visit( pFoldR, arg )
-      case pInput : PInput => visit( pInput, arg )
-      case pChoice : PChoice => visit( pChoice, arg )
-      case pMatch : PMatch => visit( pMatch, arg )
-      case pNew : PNew => visit( pNew, arg )
-      case pConstr : PConstr => visit( pConstr, arg )
-      case pPar : PPar => visit( pPar, arg )
-    }
-  }
-
   /* Proc */
   def visitDispatch( p : Proc, arg : A ) : R = {
     p match {
       case pNil : PNil => visit( pNil, arg )
       case pVal : PValue => visit( pVal, arg )
-      case pVar : PVar => visit( pVar, arg )
       case pDrop : PDrop => visit( pDrop, arg )
       case pInject : PInject => visit( pInject, arg )
       case pLift : PLift => visit( pLift, arg )
@@ -471,9 +449,6 @@ extends StrFoldCtxtVisitor {
   }
   override def visit(  p : PValue, arg : A ) : R = {
     combine( arg, visitDispatch( p.value_, Here() ) )
-  }
-  override def visit(  p : PVar, arg : A ) : R = {
-    combine( arg, L(V(p.var_), Top()) )
   }
   override def visit(  p : PDrop, arg : A ) : R = {
     /*
@@ -503,40 +478,6 @@ extends StrFoldCtxtVisitor {
   }
   override def visit(  p : PInject, arg : A ) : R
 
-  def visit(  p : PLift, product: StrTermCtxt, arg : A ) : R = {
-    import scala.collection.JavaConverters._
-    /*
-     *  [| x!( P1, ..., PN ) |]( t )
-     *  =
-     *  ( produce t [| x ]( t ) `(,[| P1 |]( t )) ... `(,[| PN |]( t )) )
-     */
-
-    val actls =
-      ( List[StrTermCtxt]() /: p.listproc_.asScala.toList )(
-        {
-          ( acc, e ) => {
-            visitDispatch( e, Here() ) match {
-              case Some( Location( pTerm : StrTermCtxt, _ ) ) => {
-                doQuote( pTerm ) match {
-                  case Some( Location( qTerm : StrTermCtxt, _ ) ) =>
-                    acc ++ List( qTerm )
-                  case None => acc
-                }
-              }
-              case None => acc
-            }
-          }
-        }
-      )
-
-    combine(
-      arg,
-      for( Location( cTerm : StrTermCtxt, _ ) <- visitDispatch( p.chan_, Here() ) ) yield {
-        L( B( _produce )( (List( TS ) ++ List(cTerm) ++ actls ++ List(product)):_* ), Top() )
-      }
-    )
-  }
-
   override def visit(  p : PLift, arg : A ) : R = {
     import scala.collection.JavaConverters._
     /*
@@ -551,11 +492,7 @@ extends StrFoldCtxtVisitor {
           ( acc, e ) => {
             visitDispatch( e, Here() ) match {
               case Some( Location( pTerm : StrTermCtxt, _ ) ) => {
-                doQuote( pTerm ) match {
-                  case Some( Location( qTerm : StrTermCtxt, _ ) ) =>
-                    acc ++ List( qTerm )
-                  case None => acc
-                }                
+                acc ++ List( pTerm )
               }
               case None => acc
             }
@@ -566,7 +503,7 @@ extends StrFoldCtxtVisitor {
     combine(
       arg,
       for( Location( cTerm : StrTermCtxt, _ ) <- visitDispatch( p.chan_, Here() ) ) yield {
-        L( B( _produce )( (List( TS ) ++ List(cTerm) ++ actls):_* ), Top() )
+        L( B( _produce )( (List( TS ) ++ List(cTerm) ++ List(V("**wildcard**")) ++ actls):_* ), Top() )
       }
     )
   }
@@ -574,57 +511,47 @@ extends StrFoldCtxtVisitor {
   override def visit(  p : PInput, arg : A ) : R = {
     import scala.collection.JavaConverters._
 
-    def forToMap( binding : Bind, proc : Proc ) : R = {
-      binding match {
-        case inBind : InputBind => {
-          var patternFresh = V( Fresh() )
-          var productFresh = V( Fresh() )
-          for(
-            // [[ chan ]] is chanTerm
-            Location( chanTerm : StrTermCtxt, _ ) <- visitDispatch( inBind.chan_, Here() );
-            // [[ ptrn ]] is ptrnTerm
-            Location( ptrnTerm : StrTermCtxt, _ ) <- visitDispatch( inBind.cpattern_, Here() );
-            // [[ P ]] is bodyTerm
-            Location( procTerm : StrTermCtxt, _ ) <- visitDispatch( proc, patternFresh, Here() )
-          ) yield {
-            // (let [[[[[ptrnFresh _binding] productFresh]] (consume t chanTerm quotedPtrnTerm) ]]
-            //   ((proc [ptrnFresh] bodyTerm ) productFresh)
-            // )
-            val quotedPtrnTerm = (for( Location( q : StrTermCtxt, _ ) <- doQuote( ptrnTerm ) ) yield { q })
-              .getOrElse( throw new FailedQuotation( ptrnTerm ) )
-            val consumeTerm = B("consume")(TS, chanTerm, quotedPtrnTerm)
-            val letBindingsTerm = B(_list)(B(_list)(B(_list)(B(_list)(patternFresh, V("_binding")), productFresh)), consumeTerm)
-            val bodyTerm = B("")(B("proc")(B(_list)(patternFresh), procTerm), productFresh)
-            L( B( "let" )(B(_list)(letBindingsTerm), bodyTerm), T() )
+    def forToConsume(bindings: List[Bind]) = {
+      def toListOfTuples(bindingsComponents: List[Option[List[StrTermCtxt]]]) = {
+        bindingsComponents map {
+          case Some(channelGroup) => channelGroup
+        } transpose match {
+          case List(a, b, c, d, e, f) => (a, b, c, d, e, f)
+        }
+      }
+
+      for (
+        Location(procTerm: StrTermCtxt, _) <- visitDispatch(p.proc_, Here())
+      ) yield {
+        val bindingsComponents = bindings map {
+          case inBind: InputBind => {
+            for (
+              Location(chanTerm: StrTermCtxt, _) <- visitDispatch(inBind.chan_, Here());
+              Location(ptrnTerm: StrTermCtxt, _) <- visitDispatch(inBind.cpattern_, Here())
+            ) yield {
+              var productFresh = V(Fresh())
+              var unificationBindingFresh = V(Fresh())
+              var wildcard = V("**wildcard**")
+              val quotedPtrnTerm = inBind.cpattern_ match {
+                case _ => (for (Location(q: StrTermCtxt, _) <- doQuote(ptrnTerm)) yield {
+                  q
+                }).getOrElse(throw new FailedQuotation(ptrnTerm))
+              }
+              List(chanTerm, ptrnTerm, quotedPtrnTerm, productFresh, unificationBindingFresh, wildcard)
+            }
           }
+          case condBind: CondInputBind => throw new NotImplementedError("TODO: Handle condBind inside consume")
+          case bind => throw new UnexpectedBindingType(bind)
         }
-        case cndInBind : CondInputBind => {
-          for(
-            // [[ chan ]] is chanTerm
-            Location( chanTerm : StrTermCtxt, _ ) <- visitDispatch( cndInBind.chan_, Here() );
-            // [[ ptrn ]] is ptrnTerm
-            Location( ptrnTerm : StrTermCtxt, _ ) <- visitDispatch( cndInBind.cpattern_, Here() );
-            Location( filterTerm : StrTermCtxt, _ ) <- visitDispatch( cndInBind.proc_, Here() );
-            // [[ P ]] is bodyTerm
-            Location( bodyTerm : StrTermCtxt, _ ) <- visitDispatch( proc, Here() )
-          ) yield {
-            // ( map [[ chan ]] proc [[ ptrn ]] [[ P ]] )
-            L( 
-              B( _filter )(
-                B( _map )( chanTerm, B( _abs )( ptrnTerm, bodyTerm ) ),
-                filterTerm
-              ), 
-              T()
-            )
-          }
-        }
-        case _ => {
-          throw new UnexpectedBindingType( binding )
-        }
+        val (chanTerms, ptrnTerms, quotedPtrnTerms, productFreshes, unificationFreshes, wildcards) = toListOfTuples(bindingsComponents)
+        val consumeTerm = B("consume")(TS, B(_list)(chanTerms: _*), B(_list)(wildcards: _*), B(_list)(quotedPtrnTerms: _*))
+        val letBindingsTerm = B(_list)(B(_list)(B(_list)(unificationFreshes: _*), B(_list)(productFreshes: _*)), consumeTerm)
+        val bodyTerm = B("")(B("proc")(B(_list)(B(_list)(ptrnTerms: _*)), procTerm), B(_list)(productFreshes: _*))
+        L(B("let")(B(_list)(letBindingsTerm), bodyTerm), T())
       }
     }
 
-    combine( 
+    combine(
       arg,
       p.listbind_.asScala.toList match {
         case Nil => {
@@ -634,65 +561,21 @@ extends StrFoldCtxtVisitor {
           /*
            *  [[ for( ptrn <- chan )P ]]
            *  =
-           *  ( map [[ chan ]] proc [[ ptrn ]] [[ P ]] )
+           *  (let [[[[unification_binding] [product]] (consume t [chanTerm] [**wildcard**] [ptrnTerm])]]
+           *    ((proc [[ptrnTerm]] bodyTerm) [product]))
            */
-          forToMap( binding, p.proc_ )
+          forToConsume(List(binding))
         }
         case bindings => {
           /*
            *  [[ for( ptrn <- chan; bindings )P ]]
            *  =
-           *  ( flatMap [[ chan ]] proc [[ ptrn ]] [[ for( bindings )P ]] )
+           *  (let [[[[unification_binding1 unification_binding2 ... unification_bindingN] [product1 product2 ... productN]]
+           *    (consume t [chanTerm1 chanTerm2 ... chanTermN] [**wildcards** ... **wildcards**] [ptrnTerm1 ptrnTerm2 ... ptrnTermN])]]
+           *      ((proc [[ptrnTerm1 ptrnTerm2 ... ptrnTermN]] bodyTerm) [product1 product2 ... productN])
+           *  )
            */
-
-          // Reversing the bindings allows for a tail recursion that
-          // can be optimized by hand to a fold. This means the
-          // compiler doesn't blow the stack on a deep set of bindings
-          // in exchange for performing the reverse operation.
-          val lastBinding :: rbindings = bindings.reverse
-
-          ( forToMap( lastBinding, p.proc_ ) /: rbindings )(
-            {
-              ( acc, e ) => {
-                e match {
-                  case inBind : InputBind => {
-                    for (
-                      // [[ chan ]] is chanTerm
-                      Location( chanTerm : StrTermCtxt, _ ) <- visitDispatch( inBind.chan_, Here() );
-                      // [[ ptrn ]] is ptrnTerm
-                      Location( ptrnTerm : StrTermCtxt, _ ) <- visitDispatch( inBind.cpattern_, Here() );
-                      Location( rbindingsTerm : StrTermCtxt, _ ) <- acc
-                    ) yield {
-                      // ( flatMap [[ chan ]] proc [[ ptrn ]] [[ for( bindings )P ]] )
-                      L( B( _join )( chanTerm, B( _abs )( ptrnTerm, rbindingsTerm ) ), T() )
-                    }
-                  }
-                  case cndInBind : CondInputBind => {
-                    for(
-                      // [[ chan ]] is chanTerm
-                      Location( chanTerm : StrTermCtxt, _ ) <- visitDispatch( cndInBind.chan_, Here() );
-                      // [[ ptrn ]] is ptrnTerm
-                      Location( ptrnTerm : StrTermCtxt, _ ) <- visitDispatch( cndInBind.cpattern_, Here() );
-                      Location( filterTerm : StrTermCtxt, _ ) <- visitDispatch( cndInBind.proc_, Here() );
-                      Location( rbindingsTerm : StrTermCtxt, _ ) <- acc
-                    ) yield {
-                      // ( map [[ chan ]] proc [[ ptrn ]] [[ P ]] )
-                      L(
-                        B( _filter )(
-                          B( _map )( chanTerm, B( _abs )( ptrnTerm, rbindingsTerm ) ),
-                          filterTerm
-                        ),
-                        T()
-                      )
-                    }
-                  }
-                  case _ => {
-                    throw new UnexpectedBindingType( e )
-                  }
-                }
-              }
-            }
-          )
+          forToConsume(bindings)
         }
       }
     )
@@ -705,8 +588,8 @@ extends StrFoldCtxtVisitor {
       arg,
       (for( Location( pTerm : StrTermCtxt, _ ) <- visitDispatch( p.proc_, Here() ) )
       yield {
-        val newBindings = newVars.map( { ( v ) => { B( v )( V( Fresh() ) ) } } )
-        L( B( "let" )( (newBindings ++ List( pTerm )):_* ), Top() )
+        val newBindings = newVars.map( { ( v ) => { B(_list)(V( v ), V( Fresh() )) } } )
+        L( B( "let" )( ( List(B(_list)(newBindings:_*)) ++ List( pTerm )):_* ), Top() )
       })
     )
   }
@@ -760,7 +643,7 @@ extends StrFoldCtxtVisitor {
           blocks.add( bbind )
           blocks.add( lbind )
 
-          val bmatch = new PMatch( new PVar( lmsgVStr ), bcases )
+          val bmatch = new PMatch( new PValue( new VQuant( new QVar( lmsgVStr ) ) ), bcases )
 
           val bpair = 
             new PPar(
@@ -854,7 +737,7 @@ extends StrFoldCtxtVisitor {
                 ) yield {
 
                   def createProcForPatternBindings = {
-                    val procTerm = B(_abs)(pattern, continuation)
+                    val procTerm = B(_abs)(B(_list)(pattern), continuation)
                     B("")(procTerm, pTerm) // TODO: Potentially allow StrTermPtdCtxtBr without Namespace ?
                   }
 
@@ -924,7 +807,7 @@ extends StrFoldCtxtVisitor {
 
     combine(
       arg,
-      Some( L( B( p.name_ )( (List( TS ) ++ actls):_* ), Top() ) )
+      Some( L( B( p.name_ )( (List(V(s"""${p.name_}Contract""")) ++ actls):_* ), Top() ) )
     )
   }
   override def visit(  p : PPar, arg : A ) : R = {
@@ -968,7 +851,7 @@ extends StrFoldCtxtVisitor {
           Location( ptrnTerm : StrTermCtxt, _ ) <- visitDispatch( p.cpattern_, Here() )
         ) yield {
           // ( map [[ chan ]] proc [[ ptrn ]] [[ P ]] )
-          L( B( _map )( chanTerm, B( _abs )( ptrnTerm, proc ) ), T() )
+          L( B( _map )( chanTerm, B( _abs )( B(_list)(ptrnTerm), proc ) ), T() )
         }
       }
       case _ => { // this is a little too optimistic or forgiving
@@ -981,7 +864,7 @@ extends StrFoldCtxtVisitor {
           Location( rbindingsTerm : StrTermCtxt, _ ) <- arg
         ) yield {
           // ( flatMap [[ chan ]] proc [[ ptrn ]] [[ for( bindings )P ]] )
-          L( B( _join )( chanTerm, B( _abs )( ptrnTerm, rbindingsTerm ) ), T() )
+          L( B( _join )( chanTerm, B( _abs )( B(_list)(ptrnTerm), rbindingsTerm ) ), T() )
         }
       }
     }
@@ -992,28 +875,38 @@ extends StrFoldCtxtVisitor {
   /* Value */
   def visitDispatch( p : Value, arg : A ) : R = {
     p match {
-      case ent : VEnt => visit( ent, arg )
       case quant : VQuant => visit( quant, arg )
+      case char : EChar => visit( char, arg )
+      case tuple : ETuple => visit( tuple, arg )
     }
   }
   override def visit(  p : VQuant, arg : A ) : R = {
     combine( arg, visitDispatch( p.quantity_, Here() ) )
   }
-  override def visit(  p : VEnt, arg : A ) : R = {
-    combine( arg, visitDispatch( p.entity_, Here() ) )
-  }
   /* Quantity */
   def visitDispatch( p : Quantity, arg : A ) : R = {
     p match {
+      case qVar : QVar => visit( qVar, arg )
       case bool : QBool => visitDispatch( bool.rhobool_, arg )
       case int : QInt => visit( int, arg )
       case double : QDouble => visit( double, arg )
+
       case neg : QNeg => visit(neg, arg)
       case mult : QMult => visit(mult, arg)
       case div : QDiv => visit(div, arg)
       case add : QAdd => visit(add, arg)
       case minus : QMinus => visit(minus, arg)
+
+      case lt : QLt => visit(lt, arg)
+      case lte : QLte => visit(lte, arg)
+      case gt : QGt => visit(gt, arg)
+      case gte : QGte => visit(gte, arg)
+      case eq : QEq => visit(eq, arg)
+      case neq : QNeq => visit(neq, arg)
     }
+  }
+  override def visit(  p : QVar, arg : A ) : R = {
+    combine( arg, L(V(p.var_), Top()) )
   }
   def visitDispatch( p : RhoBool, arg : A ) : R = {
     p match {
@@ -1086,6 +979,74 @@ extends StrFoldCtxtVisitor {
       }
     )
   }
+  override def visit( p : QLt, arg : A) : R = {
+    combine(
+      arg,
+      for(
+        Location( q1 : StrTermCtxt, _ ) <- visitDispatch( p.quantity_1, Here() );
+        Location( q2 : StrTermCtxt, _ ) <- visitDispatch( p.quantity_2, Here() )
+      ) yield {
+        L( B("<")(q1,q2), Top() )
+      }
+    )
+  }
+  override def visit( p : QLte, arg : A) : R = {
+    combine(
+      arg,
+      for(
+        Location( q1 : StrTermCtxt, _ ) <- visitDispatch( p.quantity_1, Here() );
+        Location( q2 : StrTermCtxt, _ ) <- visitDispatch( p.quantity_2, Here() )
+      ) yield {
+        L( B("<=")(q1,q2), Top() )
+      }
+    )
+  }
+  override def visit( p : QGt, arg : A) : R = {
+    combine(
+      arg,
+      for(
+        Location( q1 : StrTermCtxt, _ ) <- visitDispatch( p.quantity_1, Here() );
+        Location( q2 : StrTermCtxt, _ ) <- visitDispatch( p.quantity_2, Here() )
+      ) yield {
+        L( B(">")(q1,q2), Top() )
+      }
+    )
+  }
+  override def visit( p : QGte, arg : A) : R = {
+    combine(
+      arg,
+      for(
+        Location( q1 : StrTermCtxt, _ ) <- visitDispatch( p.quantity_1, Here() );
+        Location( q2 : StrTermCtxt, _ ) <- visitDispatch( p.quantity_2, Here() )
+      ) yield {
+        L( B(">=")(q1,q2), Top() )
+      }
+    )
+  }
+  override def visit( p : QEq, arg : A) : R = {
+    combine(
+      arg,
+      for(
+        Location( q1 : StrTermCtxt, _ ) <- visitDispatch( p.quantity_1, Here() );
+        Location( q2 : StrTermCtxt, _ ) <- visitDispatch( p.quantity_2, Here() )
+      ) yield {
+        L( B("==")(q1,q2), Top() )
+      }
+    )
+  }
+  override def visit( p : QNeq, arg : A) : R = {
+    combine(
+      arg,
+      for(
+        Location( q1 : StrTermCtxt, _ ) <- visitDispatch( p.quantity_1, Here() );
+        Location( q2 : StrTermCtxt, _ ) <- visitDispatch( p.quantity_2, Here() )
+      ) yield {
+        L( B("!=")(q1,q2), Top() )
+      }
+    )
+  }
+
+
   override def visit( p : QMinus, arg : A) : R = {
     combine(
       arg,
@@ -1099,30 +1060,10 @@ extends StrFoldCtxtVisitor {
   }
 
   /* Entity */
-  def visitDispatch( p : Entity, arg : A ) : R = {
-    p match {
-      case char : EChar => visit( char, arg )
-      case struct : EStruct => visit( struct, arg )
-      case collect : ECollect => visit( collect, arg )
-      case tuple : ETuple => visit( tuple, arg )
-    }
-  }
   override def visit(  p : EChar, arg : A ) : R = {
     combine(
       arg,
       L( G( s"""'${p.char_}'"""), Top() )
-    )
-  }
-  override def visit(  p : EStruct, arg : A ) : R
-  override def visit(  p : ECollect, arg : A ) : R
-
-  /* Struct */
-  override def visit(  p : StructConstr, arg : A ) : R
-  /* Collect */
-  override def visit(  p : CString, arg : A ) : R = {
-    combine(
-      arg,
-      L( G( s""""${p.string_}""""), Top() )
     )
   }
   /* Pattern */
